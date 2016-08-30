@@ -14,17 +14,9 @@ from Crypto.Cipher import AES # pycryptodome
 from Crypto import Random
 import boto3
 import struct
-import sys
 import os
 
-if len(sys.argv) != 5:
-  print("usage: put.py local_file bucket s3_key kms_arn")
-  sys.exit(-1)
-
-infile = sys.argv[1]
-bucket_name = sys.argv[2]
-key_name = sys.argv[3]
-kms_arn = sys.argv[4]
+boto3.setup_default_session(profile_name='reinquire')
 
 # generating this "encrypt and put" code by:
 # (a) reversing the decrypt, which I know works
@@ -83,18 +75,14 @@ def put_file(ciphertext_blob, new_iv, encrypt_ctx, upload_filename, unencrypted_
 # http://legrandin.github.io/pycryptodome/Doc/3.3.1/Crypto.Cipher._mode_cbc.CbcMode-class.html
 # https://github.com/boldfield/s3-encryption/blob/08f544f06e7f86d5df978718d6b3958c2eebba6a/s3_encryption/handler.py#L39
 
-s3 = boto3.client('s3')
-location_info = s3.get_bucket_location(Bucket=bucket_name)
-bucket_region = location_info['LocationConstraint']
-
-kms = boto3.client('kms')
-encrypt_ctx = {"kms_cmk_id":kms_arn}
-
-key_data = kms.generate_data_key(KeyId=kms_arn, EncryptionContext=encrypt_ctx, KeySpec="AES_256")
-new_iv = Random.new().read(AES.block_size)
-size_infile = os.stat(infile).st_size # unencrypted length
-outfile = infile + '.enc'
-
-encrypt_file(key_data['Plaintext'], infile, new_iv, size_infile, outfile, chunksize=16*1024)
-put_file(key_data['CiphertextBlob'], new_iv, encrypt_ctx, outfile, size_infile, bucket_name, key_name)
+def put_encrypted_object(in_file, bucket, key, kms_arn):
+    kms = boto3.client('kms', region_name="us-east-1")
+    encrypt_ctx = {"kms_cmk_id": kms_arn}
+    key_data = kms.generate_data_key(KeyId=kms_arn, EncryptionContext=encrypt_ctx, KeySpec="AES_256")
+    new_iv = Random.new().read(AES.block_size)
+    size_infile = os.stat(in_file).st_size # unencrypted length
+    outfile = in_file + '.enc'
+    encrypt_file(key_data['Plaintext'], in_file, new_iv, size_infile, outfile)
+    put_file(key_data['CiphertextBlob'], new_iv, encrypt_ctx, outfile, size_infile, bucket, key)
+    os.remove(outfile)
 

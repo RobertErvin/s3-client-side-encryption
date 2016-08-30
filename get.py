@@ -12,15 +12,10 @@ import base64
 import json
 from Crypto.Cipher import AES # pycryptodome
 import boto3
-import sys
+import uuid
+import os
 
-if len(sys.argv) != 4:
-  print("usage: get.py bucket s3_key destination_filename")
-  sys.exit(-1)
-
-bucket_name = sys.argv[1]
-key_name = sys.argv[2]
-dest_file = sys.argv[3]
+boto3.setup_default_session(profile_name='reinquire')
 
 # decrypt_file method from: http://eli.thegreenplace.net/2010/06/25/aes-encryption-of-files-in-python-with-pycrypto
 # via: https://github.com/boto/boto3/issues/38#issuecomment-174106849
@@ -42,23 +37,23 @@ def decrypt_file(key, in_filename, iv, original_size, out_filename, chunksize=16
 # http://legrandin.github.io/pycryptodome/Doc/3.3.1/Crypto.Cipher._mode_cbc.CbcMode-class.html
 # https://github.com/boldfield/s3-encryption/blob/08f544f06e7f86d5df978718d6b3958c2eebba6a/s3_encryption/handler.py#L39
 
-s3 = boto3.client('s3')
-location_info = s3.get_bucket_location(Bucket=bucket_name)
-bucket_region = location_info['LocationConstraint']
-object_info = s3.head_object(Bucket=bucket_name, Key=key_name)
 
-metadata = object_info['Metadata']
-material_json = object_info['Metadata']['x-amz-matdesc']
-# material_json is a string of json. Yes, json inside json.
+def get_decrypted_file(bucket, key, dest_file):
+    s3 = boto3.client('s3', region_name="us-east-1")
+    object_info = s3.head_object(Bucket=bucket, Key=key)
 
-envelope_key = base64.b64decode(metadata['x-amz-key-v2'])
-envelope_iv = base64.b64decode(metadata['x-amz-iv'])
-encrypt_ctx = json.loads(metadata['x-amz-matdesc'])
-original_size = metadata['x-amz-unencrypted-content-length']
+    metadata = object_info['Metadata']
 
-kms = boto3.client('kms')
-decrypted_envelope_key = kms.decrypt(CiphertextBlob=envelope_key,EncryptionContext=encrypt_ctx)
+    envelope_key = base64.b64decode(metadata['x-amz-key-v2'])
+    envelope_iv = base64.b64decode(metadata['x-amz-iv'])
+    encrypt_ctx = json.loads(metadata['x-amz-matdesc'])
+    original_size = metadata['x-amz-unencrypted-content-length']
 
-s3.download_file(bucket_name, key_name, dest_file)
-decrypt_file(decrypted_envelope_key['Plaintext'], dest_file, envelope_iv, int(original_size), "decrypted-" + dest_file)
+    kms = boto3.client('kms', region_name="us-east-1")
+    decrypted_envelope_key = kms.decrypt(CiphertextBlob=envelope_key,EncryptionContext=encrypt_ctx)
+
+    temp_output_file = str(uuid.uuid4()) + '.csv'
+    s3.download_file(bucket, key, temp_output_file)
+    decrypt_file(decrypted_envelope_key['Plaintext'], temp_output_file, envelope_iv, int(original_size), dest_file)
+    os.remove(temp_output_file)
 
